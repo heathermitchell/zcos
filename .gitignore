@@ -1,0 +1,26 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.production
+
+# Node modules
+node_modules/
+
+# Logs
+*.log
+logs/
+
+# Firebase keys
+firebase-adminsdk-*.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Temp files
+*.tmp
+*.temp

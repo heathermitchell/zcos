@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZooCrewOS 2.0 - AI Collaboration Platform</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .glass-effect {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .thread-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .message-bubble {
+            animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        // Simple text replacements for icons
+const MessageCircle = () => "💬";
+const Users = () => "👥"; 
+const Settings = () => "⚙️";
+const Plus = () => "+";
+const Archive = () => "📁";
+const Hash = () => "#";
+const Send = () => "→";
+const Smile = () => "😊";
+const AtSign = () => "@";
+const X = () => "✕";
+const CheckCircle = () => "✅";
+const Clock = () => "⏰";
+
+        const ZooCrewOS = () => {
+          // Connection and authentication
+          const [socket, setSocket] = useState(null);
+          const [username, setUsername] = useState('');
+          const [isConnected, setIsConnected] = useState(false);
+          const [connectionStatus, setConnectionStatus] = useState('disconnected');
+          
+          // Threading state
+          const [threads, setThreads] = useState([]);
+          const [activeThreadId, setActiveThreadId] = useState(null);
+          const [messages, setMessages] = useState([]);
+          const [threadParticipants, setThreadParticipants] = useState({});
+          
+          // UI state
+          const [message, setMessage] = useState('');
+          const [isTyping, setIsTyping] = useState(false);
+          const [typingUsers, setTypingUsers] = useState(new Set());
+          const [showNewThreadModal, setShowNewThreadModal] = useState(false);
+          const [showMemoryExtract, setShowMemoryExtract] = useState(false);
+          const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+          
+          // New thread creation
+          const [newThreadTitle, setNewThreadTitle] = useState('');
+          const [newThreadParticipants, setNewThreadParticipants] = useState([]);
+          const [participantInput, setParticipantInput] = useState('');
+          
+          // Memory extraction
+          const [memoryContent, setMemoryContent] = useState('');
+          const [memoryTags, setMemoryTags] = useState('');
+          const [extractionStatus, setExtractionStatus] = useState(null);
+          
+          // Refs
+          const messagesEndRef = useRef(null);
+          const messageInputRef = useRef(null);
+          const typingTimeoutRef = useRef(null);
+          
+          // Available participants for @ mentions
+          const availableParticipants = ['heather', 'emmy', 'g', 'oz'];
+
+          // AI Mention Detection Functions
+          const detectAIMentions = (content) => {
+            const mentions = [];
+            const aiNames = ['emmy', 'g', 'oz', 'sage'];
+            
+            aiNames.forEach(name => {
+              if (content.toLowerCase().includes(`@${name}`)) {
+                mentions.push(name);
+              }
+            });
+            
+            return mentions;
+          };
+
+          const triggerAIResponse = async (mentionedAI, messageContent) => {
+            try {
+              const conversationHistory = messages.slice(-6); // Last 6 messages for context
+              
+              await fetch('/api/ai-message', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  threadId: activeThreadId,
+                  mentionedAI,
+                  messageContent,
+                  conversationHistory,
+                  sender: username
+                })
+              });
+            } catch (error) {
+              console.error(`Error triggering ${mentionedAI} response:`, error);
+            }
+          };
+          
+          // Initialize socket connection
+          useEffect(() => {
+            const newSocket = io({
+              transports: ['websocket', 'polling']
+            });
+            
+            newSocket.on('connect', () => {
+              setConnectionStatus('connected');
+              console.log('Connected to ZooCrewOS');
+            });
+            
+            newSocket.on('disconnect', () => {
+              setConnectionStatus('disconnected');
+              setIsConnected(false);
+              console.log('Disconnected from ZooCrewOS');
+            });
+            
+            newSocket.on('message', (messageData) => {
+              setMessages(prev => [...prev, messageData]);
+            });
+            
+            newSocket.on('userJoined', ({ username: joinedUser, threadId }) => {
+              console.log(`${joinedUser} joined ${threadId}`);
+            });
+            
+            // AI Response Listeners
+            newSocket.on('ai-typing', (data) => {
+              // Show "Emmy is thinking..." indicator
+              console.log(`${data.emoji} ${data.aiName} ${data.status}`);
+            });
+
+            newSocket.on('ai-response', (data) => {
+              // Add AI message to conversation
+              const aiMessage = {
+                id: data.messageId,
+                content: data.content,
+                sender: data.sender,
+                senderEmoji: data.senderEmoji,
+                timestamp: data.timestamp,
+                type: 'ai-message'
+              };
+              setMessages(prev => [...prev, aiMessage]);
+            });
+
+            newSocket.on('userLeft', ({ username: leftUser, threadId }) => {
+              console.log(`${leftUser} left ${threadId}`);
+            });
+            
+            newSocket.on('participantsUpdate', ({ threadId, participants }) => {
+              setThreadParticipants(prev => ({
+                ...prev,
+                [threadId]: participants
+              }));
+            });
+            
+            newSocket.on('userTyping', ({ username: typingUser, isTyping: userIsTyping }) => {
+              setTypingUsers(prev => {
+                const updated = new Set(prev);
+                if (userIsTyping) {
+                  updated.add(typingUser);
+                } else {
+                  updated.delete(typingUser);
+                }
+                return updated;
+              });
+            });
+            
+            newSocket.on('threadSwitched', ({ threadId }) => {
+              loadMessages(threadId);
+            });
+            
+            newSocket.on('error', ({ message: errorMessage }) => {
+              console.error('Socket error:', errorMessage);
+              alert(`Error: ${errorMessage}`);
+            });
+            
+            setSocket(newSocket);
+            
+            return () => {
+              newSocket.close();
+            };
+          }, []);
+          
+          // Load threads on connection
+          useEffect(() => {
+            if (isConnected) {
+              loadThreads();
+            }
+          }, [isConnected]);
+          
+          // Auto-scroll messages
+          useEffect(() => {
+            scrollToBottom();
+          }, [messages]);
+          
+          // Typing indicator cleanup
+          useEffect(() => {
+            return () => {
+              if (typingTimeoutRef.current) {
+                clearTimeout(typingTimeoutRef.current);
+              }
+            };
+          }, []);
+          
+          const scrollToBottom = () => {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          };
+          
+          const loadThreads = async () => {
+            try {
+              const response = await fetch('/api/threads');
+              const threadsData = await response.json();
+              setThreads(threadsData);
+              
+              // Auto-select first thread if none selected
+              if (!activeThreadId && threadsData.length > 0) {
+                const firstThread = threadsData.find(t => t.metadata.status === 'active') || threadsData[0];
+                switchThread(firstThread.id);
+              }
+            } catch (error) {
+              console.error('Error loading threads:', error);
+            }
+          };
+          
+          const loadMessages = async (threadId) => {
+            try {
+              const response = await fetch(`/api/threads/${threadId}/messages`);
+              const messagesData = await response.json();
+              setMessages(messagesData);
+            } catch (error) {
+              console.error('Error loading messages:', error);
+            }
+          };
+          
+          const handleLogin = () => {
+            if (!username.trim()) {
+              alert('Please enter your username');
+              return;
+            }
+            
+            const normalizedUsername = username.toLowerCase().trim();
+            if (!availableParticipants.includes(normalizedUsername)) {
+              alert('Username must be one of: heather, emmy, g, oz');
+              return;
+            }
+
+            socket.emit('join', { username: normalizedUsername });
+            setIsConnected(true);
+          };
+          
+          const switchThread = (threadId) => {
+            if (threadId === activeThreadId) return;
+            
+            setActiveThreadId(threadId);
+            setMessages([]);
+            socket.emit('switchThread', { threadId });
+          };
+          
+          const createThread = async () => {
+            if (!newThreadTitle.trim() || newThreadParticipants.length === 0) {
+              alert('Please enter a title and select participants');
+              return;
+            }
+            
+            try {
+              const response = await fetch('/api/threads', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  title: newThreadTitle.trim(),
+                  participants: [...newThreadParticipants, username]
+                })
+              });
+              
+              if (response.ok) {
+                const newThread = await response.json();
+                setThreads(prev => [newThread, ...prev]);
+                setShowNewThreadModal(false);
+                setNewThreadTitle('');
+                setNewThreadParticipants([]);
+                switchThread(newThread.id);
+              } else {
+                alert('Failed to create thread');
+              }
+            } catch (error) {
+              console.error('Error creating thread:', error);
+              alert('Error creating thread');
+            }
+          };
+          
+          const toggleThreadArchive = async (threadId) => {
+            const thread = threads.find(t => t.id === threadId);
+            const newStatus = thread.metadata.status === 'active' ? 'archived' : 'active';
+            
+            try {
+              const response = await fetch(`/api/threads/${threadId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: newStatus })
+              });
+              
+              if (response.ok) {
+                setThreads(prev => prev.map(t => 
+                  t.id === threadId 
+                    ? { ...t, metadata: { ...t.metadata, status: newStatus } }
+                    : t
+                ));
+                
+                // If archiving active thread, switch to another
+                if (threadId === activeThreadId && newStatus === 'archived') {
+                  const activeThreads = threads.filter(t => t.metadata.status === 'active' && t.id !== threadId);
+                  if (activeThreads.length > 0) {
+                    switchThread(activeThreads[0].id);
+                  }
+                }
+              }
+            } catch (error) {
+              console.error('Error toggling thread archive:', error);
+            }
+          };
+          
+          const sendMessage = () => {
+            if (!message.trim()) return;
+            
+            socket.emit('message', {
+              content: message.trim()
+            });
+            
+            // Check for AI mentions and trigger responses
+            const aiMentions = detectAIMentions(message.trim());
+            if (aiMentions.length > 0) {
+              aiMentions.forEach(mentionedAI => {
+                triggerAIResponse(mentionedAI, message.trim());
+              });
+            }
+            
+            setMessage('');
+            setIsTyping(false);
+            socket.emit('typing', { isTyping: false });
+          };
+          
+          const handleTyping = (value) => {
+            setMessage(value);
+            
+            if (!isTyping && value.length > 0) {
+              setIsTyping(true);
+              socket.emit('typing', { isTyping: true });
+            }
+            
+            // Clear existing timeout
+            if (typingTimeoutRef.current) {
+              clearTimeout(typingTimeoutRef.current);
+            }
+            
+            // Set new timeout to stop typing indicator
+            typingTimeoutRef.current = setTimeout(() => {
+              setIsTyping(false);
+              socket.emit('typing', { isTyping: false });
+            }, 1000);
+          };
+          
+          const addParticipant = (participant) => {
+            if (!newThreadParticipants.includes(participant)) {
+              setNewThreadParticipants(prev => [...prev, participant]);
+            }
+            setParticipantInput('');
+          };
+          
+          const removeParticipant = (participant) => {
+            setNewThreadParticipants(prev => prev.filter(p => p !== participant));
+          };
+          
+          const extractMemory = async () => {
+            if (!memoryContent.trim()) {
+              alert('Please enter memory content');
+              return;
+            }
+            
+            setExtractionStatus('processing');
+            
+            try {
+              const response = await fetch('/api/extract-memory', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  threadId: activeThreadId,
+                  content: memoryContent.trim(),
+                  agent: username,
+                  tags: memoryTags.split(',').map(t => t.trim()).filter(Boolean)
+                })
+              });
+              
+              if (response.ok) {
+                setExtractionStatus('success');
+                setMemoryContent('');
+                setMemoryTags('');
+                setTimeout(() => {
+                  setShowMemoryExtract(false);
+                  setExtractionStatus(null);
+                }, 2000);
+              } else {
+                setExtractionStatus('error');
+              }
+            } catch (error) {
+              console.error('Error extracting memory:', error);
+              setExtractionStatus('error');
+            }
+          };
+          
+          const formatTimestamp = (timestamp) => {
+            return new Date(timestamp).toLocaleTimeString([], { 
+              hour: '2-digit', 
+              minute: '2-digit' 
+            });
+          };
+          
+          const getAgentColor = (agent) => {
+            const colors = {
+              heather: 'text-purple-600',
+              emmy: 'text-blue-600', 
+              g: 'text-green-600',
+              oz: 'text-orange-600'
+            };
+            return colors[agent] || 'text-gray-600';
+          };
+          
+          const getAgentIcon = (agent) => {
+            const icons = {
+              heather: '🦎',
+              emmy: '🐕',
+              g: '🐢', 
+              oz: '🔧'
+            };
+            return icons[agent] || '👤';
+          };
+          
+          // Login screen
+          if (!isConnected) {
+            return (
+              <div className="min-h-screen gradient-bg flex items-center justify-center">
+                <div className="glass-effect rounded-2xl p-8 w-96">
+                  <div className="text-center mb-8">
+                    <h1 className="text-3xl font-bold text-white mb-2">ZooCrewOS 2.0</h1>
+                    <p className="text-purple-200">AI Collaboration Platform</p>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-white mb-2">
+                        Choose Your Identity
+                      </label>
+                      <select
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-white/70 focus:outline-none focus:ring-2 focus:ring-purple-400"
+                      >
+                        <option value="">Select...</option>
+                        <option value="heather">🦎 Heather - Visionary Leader</option>
+                        <option value="emmy">🐕 Emmy - Creative Strategist</option>
+                        <option value="g">🐢 G - Systems Architect</option>
+                        <option value="oz">🔧 Oz - Infrastructure Specialist</option>
+                      </select>
+                    </div>
+                    
+                    <button
+                      onClick={handleLogin}
+                      disabled={!username || connectionStatus !== 'connected'}
+                      className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold py-2 px-4 rounded-lg hover:from-purple-600 hover:to-pink-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                      {connectionStatus === 'connected' ? 'Join ZooCrewOS' : 'Connecting...'}
+                    </button>
+                    
+                    <div className="text-center">
+                      <div className={`inline-flex items-center space-x-2 text-sm ${
+                        connectionStatus === 'connected' ? 'text-green-300' : 'text-yellow-300'
+                      }`}>
+                        <div className={`w-2 h-2 rounded-full ${
+                          connectionStatus === 'connected' ? 'bg-green-400' : 'bg-yellow-400'
+                        }`}></div>
+                        <span>{connectionStatus === 'connected' ? 'Connected' : 'Connecting...'}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+          
+          // Main chat interface
+          return (
+            <div className="min-h-screen bg-gray-100 flex">
+              {/* Sidebar */}
+              <div className={`${sidebarCollapsed ? 'w-16' : 'w-80'} bg-white border-r border-gray-200 flex flex-col transition-all duration-300`}>
+                {/* Header */}
+                <div className="p-4 border-b border-gray-200">
+                  <div className="flex items-center justify-between">
+                    {!sidebarCollapsed && (
+                      <div>
+                        <h1 className="text-xl font-bold text-gray-800">ZooCrewOS 2.0</h1>
+                        <p className="text-sm text-gray-500">Threading Edition</p>
+                      </div>
+                    )}
+                    <button
+                      onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                      className="p-2 rounded-lg hover:bg-gray-100"
+                    >
+                      <MessageCircle className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+                
+                {!sidebarCollapsed && (
+                  <>
+                    {/* New Thread Button */}
+                    <div className="p-4">
+                      <button
+                        onClick={() => setShowNewThreadModal(true)}
+                        className="w-full flex items-center space-x-2 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>New Thread</span>
+                      </button>
+                    </div>
+                    
+                    {/* Threads List */}
+                    <div className="flex-1 overflow-y-auto">
+                      <div className="px-4 py-2">
+                        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Active Threads</h3>
+                      </div>
+                      
+                      {threads.filter(t => t.metadata.status === 'active').map(thread => (
+                        <div
+                          key={thread.id}
+                          onClick={() => switchThread(thread.id)}
+                          className={`mx-2 mb-1 p-3 rounded-lg cursor-pointer thread-item ${
+                            activeThreadId === thread.id ? 'bg-blue-100 border-l-4 border-blue-500' : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center space-x-2">
+                                <Hash className="w-4 h-4 text-gray-400" />
+                                <span className="font-medium text-gray-800">{thread.metadata.title}</span>
+                              </div>
+                              <div className="flex items-center space-x-1 mt-1">
+                                {thread.metadata.participants.map(participant => (
+                                  <span key={participant} className="text-xs">
+                                    {getAgentIcon(participant)}
+                                  </span>
+                                ))}
+                                <span className="text-xs text-gray-500">
+                                  {threadParticipants[thread.id]?.length || 0} online
+                                </span>
+                              </div>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleThreadArchive(thread.id);
+                              }}
+                              className="p-1 rounded hover:bg-gray-200"
+                            >
+                              <Archive className="w-4 h-4 text-gray-400" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      
+                      {threads.filter(t => t.metadata.status === 'archived').length > 0 && (
+                        <>
+                          <div className="px-4 py-2 mt-4">
+                            <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Archived</h3>
+                          </div>
+                          
+                          {threads.filter(t => t.metadata.status === 'archived').map(thread => (
+                            <div
+                              key={thread.id}
+                              onClick={() => switchThread(thread.id)}
+                              className="mx-2 mb-1 p-3 rounded-lg cursor-pointer thread-item opacity-60 hover:opacity-80"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex-1">
+                                  <div className="flex items-center space-x-2">
+                                    <Archive className="w-4 h-4 text-gray-400" />
+                                    <span className="font-medium text-gray-600">{thread.metadata.title}</span>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleThreadArchive(thread.id);
+                                  }}
+                                  className="p-1 rounded hover:bg-gray-200"
+                                >
+                                  <Hash className="w-4 h-4 text-gray-400" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                    
+                    {/* User Info */}
+                    <div className="p-4 border-t border-gray-200">
+                      <div className="flex items-center space-x-3">
+                        <div className="text-2xl">{getAgentIcon(username)}</div>
+                        <div>
+                          <div className="font-medium text-gray-800 capitalize">{username}</div>
+                          <div className="text-sm text-gray-500">Online</div>
+                        </div>
+                        <button
+                          onClick={() => setShowMemoryExtract(true)}
+                          className="ml-auto p-2 rounded-lg hover:bg-gray-100"
+                          title="Extract Memory"
+                        >
+                          <Settings className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+              
+              {/* Main Chat Area */}
+              <div className="flex-1 flex flex-col">
+                {/* Chat Header */}
+                {activeThreadId && (
+                  <div className="bg-white border-b border-gray-200 px-6 py-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="text-lg font-semibold text-gray-800">
+                          {threads.find(t => t.id === activeThreadId)?.metadata.title}
+                        </h2>
+                        <div className="flex items-center space-x-4 text-sm text-gray-500">
+                          <div className="flex items-center space-x-1">
+                            <Users className="w-4 h-4" />
+                            <span>{threadParticipants[activeThreadId]?.length || 0} participants</span>
+                          </div>
+                          {threadParticipants[activeThreadId]?.map(participant => (
+                            <span key={participant} className={`${getAgentColor(participant)} font-medium`}>
+                              {getAgentIcon(participant)} {participant}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Messages */}
+                <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                  {messages.map((msg) => (
+                    <div key={msg.id} className="message-bubble">
+                      <div className="flex items-start space-x-3">
+                        <div className="text-2xl">{getAgentIcon(msg.sender)}</div>
+                        <div className="flex-1">
+                          <div className="flex items-center space-x-2">
+                            <span className={`font-semibold ${getAgentColor(msg.sender)}`}>
+                              {msg.sender}
+                            </span>
+                            <span className="text-xs text-gray-500">
+                              {formatTimestamp(msg.timestamp)}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-gray-800">{msg.content}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {/* Typing Indicators */}
+                  {typingUsers.size > 0 && (
+                    <div className="flex items-center space-x-2 text-gray-500">
+                      <div className="flex space-x-1">
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+                      </div>
+                      <span className="text-sm">
+                        {Array.from(typingUsers).join(', ')} {typingUsers.size === 1 ? 'is' : 'are'} typing...
+                      </span>
+                    </div>
+                  )}
+                  
+                  <div ref={messagesEndRef} />
+                </div>
+                
+                {/* Message Input */}
+                {activeThreadId && (
+                  <div className="bg-white border-t border-gray-200 p-4">
+                    <div className="flex items-center space-x-4">
+                      <div className="flex-1">
+                        <input
+                          ref={messageInputRef}
+                          type="text"
+                          value={message}
+                          onChange={(e) => handleTyping(e.target.value)}
+                          onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                          placeholder={`Message ${threads.find(t => t.id === activeThreadId)?.metadata.title}...`}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <button
+                        onClick={sendMessage}
+                        disabled={!message.trim()}
+                        className="bg-blue-500 text-white p-2 rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <Send className="w-5 h-5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              
+              {/* New Thread Modal */}
+              {showNewThreadModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                  <div className="bg-white rounded-lg p-6 w-96 max-w-90vw">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-semibold">Create New Thread</h3>
+                      <button
+                        onClick={() => setShowNewThreadModal(false)}
+                        className="p-1 rounded hover:bg-gray-100"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Thread Title
+                        </label>
+                        <input
+                          type="text"
+                          value={newThreadTitle}
+                          onChange={(e) => setNewThreadTitle(e.target.value)}
+                          placeholder="Enter thread title..."
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Participants
+                        </label>
+                        <div className="space-y-2">
+                          {availableParticipants.filter(p => p !== username).map(participant => (
+                            <label key={participant} className="flex items-center">
+                              <input
+                                type="checkbox"
+                                checked={newThreadParticipants.includes(participant)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    addParticipant(participant);
+                                  } else {
+                                    removeParticipant(participant);
+                                  }
+                                }}
+                                className="mr-2"
+                              />
+                              <span className="flex items-center space-x-2">
+                                <span>{getAgentIcon(participant)}</span>
+                                <span className="capitalize">{participant}</span>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                        
+                        {newThreadParticipants.length > 0 && (
+                          <div className="mt-2">
+                            <p className="text-sm text-gray-600">Selected participants:</p>
+                            <div className="flex flex-wrap gap-2 mt-1">
+                              {newThreadParticipants.map(participant => (
+                                <span
+                                  key={participant}
+                                  className="inline-flex items-center space-x-1 bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-xs"
+                                >
+                                  <span>{getAgentIcon(participant)}</span>
+                                  <span>{participant}</span>
+                                  <button
+                                    onClick={() => removeParticipant(participant)}
+                                    className="ml-1 hover:text-blue-600"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="flex space-x-3">
+                        <button
+                          onClick={() => setShowNewThreadModal(false)}
+                          className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={createThread}
+                          disabled={!newThreadTitle.trim() || newThreadParticipants.length === 0}
+                          className="flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Create Thread
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Memory Extraction Modal */}
+              {showMemoryExtract && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                  <div className="bg-white rounded-lg p-6 w-96 max-w-90vw">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-semibold">Extract Memory</h3>
+                      <button
+                        onClick={() => setShowMemoryExtract(false)}
+                        className="p-1 rounded hover:bg-gray-100"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Memory Content
+                        </label>
+                        <textarea
+                          value={memoryContent}
+                          onChange={(e) => setMemoryContent(e.target.value)}
+                          placeholder="Enter important information to remember..."
+                          rows={4}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Tags (comma-separated)
+                        </label>
+                        <input
+                          type="text"
+                          value={memoryTags}
+                          onChange={(e) => setMemoryTags(e.target.value)}
+                          placeholder="decision, infrastructure, important..."
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      
+                      {extractionStatus && (
+                        <div className={`flex items-center space-x-2 ${
+                          extractionStatus === 'success' ? 'text-green-600' : 
+                          extractionStatus === 'error' ? 'text-red-600' : 'text-blue-600'
+                        }`}>
+                          {extractionStatus === 'processing' && <Clock className="w-4 h-4 animate-spin" />}
+                          {extractionStatus === 'success' && <CheckCircle className="w-4 h-4" />}
+                          {extractionStatus === 'error' && <X className="w-4 h-4" />}
+                          <span className="text-sm">
+                            {extractionStatus === 'processing' && 'Processing memory extraction...'}
+                            {extractionStatus === 'success' && 'Memory extracted successfully!'}
+                            {extractionStatus === 'error' && 'Failed to extract memory'}
+                          </span>
+                        </div>
+                      )}
+                      
+                      <div className="flex space-x-3">
+                        <button
+                          onClick={() => setShowMemoryExtract(false)}
+                          className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={extractMemory}
+                          disabled={!memoryContent.trim() || extractionStatus === 'processing'}
+                          className="flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Extract Memory
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        ReactDOM.render(<ZooCrewOS />, document.getElementById('root'));
+    </script>
+</body>
+</html>
